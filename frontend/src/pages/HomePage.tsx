@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom'
 import ProjectCard from '../components/ProjectCard'
 import FileUpload from '../components/FileUpload'
 import BilibiliDownload from '../components/BilibiliDownload'
+import RemoteVideoDownload from '../components/RemoteVideoDownload'
 
 import { projectApi } from '../services/api'
 import { Project, useProjectStore } from '../store/useProjectStore'
@@ -24,7 +25,7 @@ const HomePage: React.FC = () => {
   const navigate = useNavigate()
   const { projects, setProjects, deleteProject, loading, setLoading } = useProjectStore()
   const [statusFilter, setStatusFilter] = useState<string>('all')
-  const [activeTab, setActiveTab] = useState<'upload' | 'bilibili'>('upload')
+  const [activeTab, setActiveTab] = useState<'upload' | 'bilibili' | 'remote'>('upload')
 
   // 使用项目轮询Hook
   const { refreshNow } = useProjectPolling({
@@ -165,7 +166,24 @@ const HomePage: React.FC = () => {
                    }}
                    onClick={() => setActiveTab('bilibili')}
                  >
-                   📺 链接导入
+                   📺 B站链接
+                 </button>
+                 <button 
+                   style={{
+                     flex: 1,
+                     padding: '12px 24px',
+                     borderRadius: '8px',
+                     background: activeTab === 'remote' ? 'rgba(79, 172, 254, 0.2)' : 'transparent',
+                     color: activeTab === 'remote' ? '#4facfe' : '#cccccc',
+                     cursor: 'pointer',
+                     fontSize: '16px',
+                     fontWeight: 600,
+                     transition: 'all 0.3s ease',
+                     border: activeTab === 'remote' ? '1px solid rgba(79, 172, 254, 0.4)' : '1px solid transparent'
+                   }}
+                   onClick={() => setActiveTab('remote')}
+                 >
+                   🌐 远程视频
                  </button>
                 <button 
                    style={{
@@ -182,7 +200,7 @@ const HomePage: React.FC = () => {
                    }}
                    onClick={() => setActiveTab('upload')}
                  >
-                   📁 文件导入
+                   📁 本地文件
                  </button>
               </div>
               
@@ -200,6 +218,23 @@ const HomePage: React.FC = () => {
                       } catch (error) {
                         // 如果启动处理失败，至少确保项目列表是最新的
                         console.error('Failed to start processing after download:', error)
+                        loadProjects()
+                      }
+                    }, 500)
+                  }} />
+                )}
+                {activeTab === 'remote' && (
+                  <RemoteVideoDownload onDownloadSuccess={async (projectId: string) => {
+                    // 处理完成后刷新项目列表
+                    await loadProjects()
+                    
+                    // 延迟一下再开始处理，确保项目状态已更新
+                    setTimeout(async () => {
+                      try {
+                        await handleStartProcessing(projectId)
+                      } catch (error) {
+                        // 如果启动处理失败，至少确保项目列表是最新的
+                        console.error('Failed to start processing after remote download:', error)
                         loadProjects()
                       }
                     }, 500)

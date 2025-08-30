@@ -31,6 +31,7 @@ from src.main import AutoClipsProcessor
 from src.config import OUTPUT_DIR, CLIPS_DIR, COLLECTIONS_DIR, METADATA_DIR, DASHSCOPE_API_KEY, VideoCategory, VIDEO_CATEGORIES_CONFIG
 # from src.upload.upload_manager import UploadManager, Platform, UploadStatus  # 已移除bilitool相关功能
 from src.utils.bilibili_downloader import BilibiliDownloader, BilibiliVideoInfo, download_bilibili_video, get_bilibili_video_info
+from src.utils.remote_downloader import RemoteDownloader, download_remote_video
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -135,6 +136,27 @@ class BilibiliDownloadTask(BaseModel):
     created_at: str
     updated_at: str
 
+class RemoteDownloadRequest(BaseModel):
+    video_url: str
+    subtitle_url: Optional[str] = None
+    project_name: str
+    video_category: str = "default"
+    subtitle_mode: str = "auto"  # auto/extract/generate
+
+class RemoteDownloadTask(BaseModel):
+    task_id: str
+    video_url: str
+    subtitle_url: Optional[str] = None
+    status: str  # 'pending', 'downloading', 'processing', 'completed', 'error'
+    progress: float
+    status_message: str
+    video_path: Optional[str] = None
+    subtitle_path: Optional[str] = None
+    project_id: Optional[str] = None
+    error: Optional[str] = None
+    created_at: str
+    updated_at: str
+
 # 全局状态管理
 class ProjectManager:
     def __init__(self):
@@ -147,6 +169,7 @@ class ProjectManager:
         self.current_processing_count = 0
         # self.upload_manager = UploadManager()  # 已移除bilitool相关功能
         self.bilibili_tasks: Dict[str, BilibiliDownloadTask] = {}  # B站下载任务
+        self.remote_download_tasks: Dict[str, RemoteDownloadTask] = {}  # 远程下载任务
         self.load_projects()
     
     def load_projects(self):
@@ -184,7 +207,7 @@ class ProjectManager:
         except Exception as e:
             logger.error(f"保存项目数据失败: {e}")
     
-    def create_project(self, name: str, video_path: str, project_id: str = None, video_category: str = "default") -> Project:
+    def create_project(self, name: str, video_path: str, project_id: Optional[str] = None, video_category: str = "default") -> Project:
         """创建新项目"""
         if project_id is None:
             project_id = str(uuid.uuid4())
@@ -297,6 +320,43 @@ class ProjectManager:
     def get_bilibili_task(self, task_id: str) -> Optional[BilibiliDownloadTask]:
         """获取B站下载任务"""
         return self.bilibili_tasks.get(task_id)
+    
+    def create_remote_download_task(self, video_url: str, subtitle_url: Optional[str] = None, 
+                                  project_name: str = "远程视频项目", video_category: str = "default") -> str:
+        """创建远程下载任务"""
+        task_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        
+        task = RemoteDownloadTask(
+            task_id=task_id,
+            video_url=video_url,
+            subtitle_url=subtitle_url,
+            status="pending",
+            progress=0.0,
+            status_message="等待开始下载",
+            created_at=now,
+            updated_at=now
+        )
+        
+        self.remote_download_tasks[task_id] = task
+        return task_id
+    
+    def get_remote_download_task(self, task_id: str) -> Optional[RemoteDownloadTask]:
+        """获取远程下载任务"""
+        return self.remote_download_tasks.get(task_id)
+    
+    def update_remote_download_task(self, task_id: str, **updates):
+        """更新远程下载任务"""
+        if task_id in self.remote_download_tasks:
+            task = self.remote_download_tasks[task_id]
+            for key, value in updates.items():
+                if hasattr(task, key):
+                    setattr(task, key, value)
+            task.updated_at = datetime.now().isoformat()
+    
+    def list_remote_download_tasks(self) -> List[RemoteDownloadTask]:
+        """列出所有远程下载任务"""
+        return list(self.remote_download_tasks.values())
     
     def update_bilibili_task(self, task_id: str, **updates) -> Optional[BilibiliDownloadTask]:
         """更新B站下载任务"""
@@ -543,6 +603,67 @@ async def get_bilibili_download_task(task_id: str):
 async def list_bilibili_download_tasks():
     """列出所有B站下载任务"""
     tasks = project_manager.list_bilibili_tasks()
+    # 按创建时间倒序排列
+    tasks.sort(key=lambda x: x.created_at, reverse=True)
+    return {"tasks": tasks}
+
+# 远程视频下载相关API
+@app.post("/api/remote-download/create")
+async def create_remote_download_task(
+    background_tasks: BackgroundTasks,
+    request: RemoteDownloadRequest
+):
+    """创建远程视频下载任务"""
+    try:
+        # 验证URL格式
+        downloader = RemoteDownloader()
+        if not downloader.validate_url(request.video_url):
+            raise HTTPException(status_code=400, detail="无效的视频URL")
+        
+        if request.subtitle_url and not downloader.validate_url(request.subtitle_url):
+            raise HTTPException(status_code=400, detail="无效的字幕URL")
+        
+        # 创建下载任务
+        task_id = project_manager.create_remote_download_task(
+            video_url=request.video_url,
+            subtitle_url=request.subtitle_url,
+            project_name=request.project_name,
+            video_category=request.video_category
+        )
+        
+        # 启动后台下载任务
+        background_tasks.add_task(
+            process_remote_download_task,
+            task_id,
+            request.video_url,
+            request.subtitle_url,
+            request.project_name,
+            request.video_category,
+            request.subtitle_mode
+        )
+        
+        return {
+            "success": True,
+            "task_id": task_id,
+            "message": "远程下载任务已创建"
+        }
+    except Exception as e:
+        logger.error(f"创建远程下载任务失败: {e}")
+        raise HTTPException(status_code=500, detail=f"创建下载任务失败: {str(e)}")
+
+@app.get("/api/remote-download/tasks/{task_id}")
+async def get_remote_download_task(task_id: str):
+    """获取远程下载任务状态"""
+    task = project_manager.get_remote_download_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    
+    return task
+
+@app.get("/api/remote-download/tasks")
+async def list_remote_download_tasks():
+    """列出所有远程下载任务"""
+    tasks = project_manager.list_remote_download_tasks()
     # 按创建时间倒序排列
     tasks.sort(key=lambda x: x.created_at, reverse=True)
     return {"tasks": tasks}
@@ -866,6 +987,166 @@ async def process_bilibili_download_task(
         
         # 更新任务状态为失败
         project_manager.update_bilibili_task(
+            task_id,
+            status="error",
+            status_message=error_msg,
+            error=error_msg,
+            progress=0
+        )
+        
+        # 清理临时文件
+        try:
+            temp_download_dir = Path("./temp_downloads") / task_id
+            if temp_download_dir.exists():
+                shutil.rmtree(temp_download_dir)
+        except Exception as cleanup_error:
+            logger.warning(f"清理临时文件失败: {cleanup_error}")
+
+async def process_remote_download_task(
+    task_id: str,
+    video_url: str,
+    subtitle_url: Optional[str] = None,
+    project_name: str = "远程视频项目",
+    video_category: str = "default",
+    subtitle_mode: str = "auto"
+):
+    """处理远程视频下载任务"""
+    try:
+        # 更新任务状态
+        project_manager.update_remote_download_task(
+            task_id,
+            status="downloading",
+            status_message="正在下载远程视频...",
+            progress=0
+        )
+        
+        # 创建临时下载目录
+        temp_download_dir = Path("./temp_downloads") / task_id
+        temp_download_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 进度回调函数
+        def progress_callback(status_msg: str, progress: float):
+            project_manager.update_remote_download_task(
+                task_id,
+                progress=progress,
+                status_message=status_msg
+            )
+        
+        # 下载视频和字幕
+        downloader = RemoteDownloader(temp_download_dir)
+        download_result = await downloader.download_video_and_subtitle(
+            video_url, subtitle_url, progress_callback
+        )
+        
+        if not download_result['video_path']:
+            raise Exception("视频下载失败")
+        
+        # 更新任务状态
+        project_manager.update_remote_download_task(
+            task_id,
+            status="processing",
+            status_message="正在创建项目...",
+            video_path=download_result['video_path'],
+            subtitle_path=download_result['subtitle_path'],
+            progress=90
+        )
+        
+        # 创建项目
+        project_id = str(uuid.uuid4())
+        project_dir = Path("./uploads") / project_id
+        input_dir = project_dir / "input"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 移动文件到项目目录
+        video_src = Path(download_result['video_path'])
+        video_dst = input_dir / "input.mp4"
+        shutil.move(str(video_src), str(video_dst))
+        
+        subtitle_dst = None
+        if download_result['subtitle_path']:
+            subtitle_src = Path(download_result['subtitle_path'])
+            subtitle_dst = input_dir / "input.srt"
+            shutil.move(str(subtitle_src), str(subtitle_dst))
+        else:
+            # 如果没有字幕文件，根据字幕模式生成字幕
+            try:
+                from src.utils.audio_processor import AudioProcessor
+                
+                # 更新任务状态
+                project_manager.update_remote_download_task(
+                    task_id,
+                    status="processing",
+                    status_message=f"正在从视频生成字幕 (mode: {subtitle_mode})...",
+                    progress=70
+                )
+                
+                subtitle_dst = input_dir / "input.srt"
+                audio_processor = AudioProcessor()
+                
+                # 进度回调函数用于字幕生成
+                def subtitle_progress_callback(status_msg: str, progress: float):
+                    # 将字幕生成的进度映射到总进度的70-85%
+                    total_progress = 70 + (progress * 0.15)
+                    project_manager.update_remote_download_task(
+                        task_id,
+                        progress=total_progress,
+                        status_message=f"字幕生成: {status_msg}"
+                    )
+                
+                # 根据字幕模式生成字幕
+                try:
+                    await audio_processor.generate_subtitles_from_video(
+                        video_dst,
+                        subtitle_dst,
+                        method="whisper",
+                        extract_mode=subtitle_mode,  # 使用用户指定的字幕模式
+                        progress_callback=subtitle_progress_callback
+                    )
+                    logger.info(f"成功生成字幕（mode: {subtitle_mode}）")
+                except Exception as subtitle_error:
+                    logger.error(f"字幕生成失败: {subtitle_error}")
+                    # 如果所有方法都失败，抛出异常而不是创建占位字幕
+                    raise Exception(f"无法为视频生成字幕: {subtitle_error}")
+                
+                # 清理临时文件
+                audio_processor.cleanup_temp_files()
+                
+                # 清理临时文件
+                audio_processor.cleanup_temp_files()
+
+        
+        # 清理临时目录
+        try:
+            shutil.rmtree(temp_download_dir)
+        except Exception as e:
+            logger.warning(f"清理临时目录失败: {e}")
+        
+        # 创建项目记录
+        relative_video_path = f"uploads/{project_id}/input/input.mp4"
+        project = project_manager.create_project(
+            project_name,
+            relative_video_path,
+            project_id,
+            video_category
+        )
+        
+        # 更新任务状态为完成
+        project_manager.update_remote_download_task(
+            task_id,
+            status="completed",
+            status_message="项目创建完成",
+            project_id=project_id,
+            progress=100
+        )
+        
+        logger.info(f"远程视频下载任务完成: {task_id}, 项目ID: {project_id}")
+        
+    except Exception as e:
+        error_msg = f"下载失败: {str(e)}"
+        logger.error(f"远程视频下载任务失败 {task_id}: {error_msg}")
+        
+        # 更新任务状态为失败
+        project_manager.update_remote_download_task(
             task_id,
             status="error",
             status_message=error_msg,
@@ -1376,7 +1657,7 @@ async def get_project_logs(project_id: str, lines: int = 50):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/projects/{project_id}/download")
-async def download_project_video(project_id: str, clip_id: str = None, collection_id: str = None):
+async def download_project_video(project_id: str, clip_id: Optional[str] = None, collection_id: Optional[str] = None):
     """下载项目视频文件"""
     project = project_manager.get_project(project_id)
     if not project:

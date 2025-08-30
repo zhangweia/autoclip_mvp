@@ -24,6 +24,11 @@ cryptography==42.0.5
 # B站相关工具
 yt-dlp>=2023.12.30
 
+# 音频处理和语音识别
+#openai-whisper>=20231117
+# azure-cognitiveservices-speech>=1.35.0  # 可选：Azure语音服务
+# alibabacloud-nls20180518>=1.0.0        # 可选：阿里云语音服务
+
 # 测试依赖
 pytest==8.0.0
 pytest-cov==4.1.0
