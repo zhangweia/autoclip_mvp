@@ -80,14 +80,21 @@ class ClipScorer:
         """
         try:
             # 输入给LLM的数据不需要包含所有字段，只给必要的
-            input_for_llm = [
-                {
-                    "outline": clip.get('outline'), 
+            input_for_llm = []
+            for clip in clips:
+                # 处理outline字段，确保是字符串格式
+                outline = clip.get('outline', '')
+                if isinstance(outline, dict):
+                    outline_text = outline.get('title', '')
+                else:
+                    outline_text = str(outline) if outline else ''
+                
+                input_for_llm.append({
+                    "outline": outline_text,
                     "content": clip.get('content'),
                     "start_time": clip.get('start_time'),
                     "end_time": clip.get('end_time'),
-                } for clip in clips
-            ]
+                })
             
             response = self.llm_client.call_with_retry(self.recommendation_prompt, input_for_llm)
             parsed_list = self.llm_client.parse_json_response(response)
@@ -108,7 +115,15 @@ class ClipScorer:
                 else:
                     original_clip['final_score'] = round(float(score), 2)
                     original_clip['recommend_reason'] = reason
-                    logger.info(f"  > 评分成功: {original_clip.get('outline', '')[:20]}... [分数: {score}]")
+                    # 安全地获取outline标题用于日志
+                    outline_text = ""
+                    outline = original_clip.get('outline', '')
+                    if isinstance(outline, dict):
+                        outline_text = outline.get('title', '')
+                    elif isinstance(outline, str):
+                        outline_text = outline
+                    
+                    logger.info(f"  > 评分成功: {outline_text[:20]}... [分数: {score}]")
 
             return clips
 

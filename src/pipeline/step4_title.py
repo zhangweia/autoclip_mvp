@@ -84,7 +84,15 @@ class TitleGenerator:
                     generated_title = titles_map.get(clip_id)
                     if generated_title and isinstance(generated_title, str):
                         clip['generated_title'] = generated_title
-                        logger.info(f"  > 为片段 {clip_id} ('{clip.get('outline', '')[:20]}...') 生成标题: {generated_title}")
+                        # 安全地获取outline标题用于日志
+                        outline_text = ""
+                        outline = clip.get('outline', '')
+                        if isinstance(outline, dict):
+                            outline_text = outline.get('title', '')
+                        elif isinstance(outline, str):
+                            outline_text = outline
+                        
+                        logger.info(f"  > 为片段 {clip_id} ('{outline_text[:20]}...') 生成标题: {generated_title}")
                     else:
                         clip['generated_title'] = clip.get('outline', f"片段_{clip_id}")  # 使用outline作为fallback
                         logger.warning(f"  > 未能为片段 {clip_id} 找到或解析标题，使用原始outline")
